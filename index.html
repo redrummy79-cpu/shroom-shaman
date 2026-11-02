@@ -450,8 +450,9 @@ function meterPos(){ return L.portrait ? {x:26,y:172,w:300,h:26,cx:176,cy:185,ho
 function frogSwarm(x,y){
   const n = 3+Math.floor(Math.random()*2);
   for(let i=0;i<n;i++){
-    const a = -Math.PI/2 + rand(-1.1,1.1), s=rand(350,560);
-    G.frogs.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:6,hop:rand(0.3,0.7),face:Math.cos(a)<0?-1:1,squash:0});
+    // frogs pop out of the power peg with a small leap, then fall under gravity like the seed
+    const a = -Math.PI/2 + rand(-1.0,1.0), s=rand(260,420);
+    G.frogs.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:6,face:Math.cos(a)<0?-1:1,squash:0,apexY:y,lastPeg:null});
   }
   powerSound(); ribbit();
   floatText(x,y-50,'Frog Swarm!','#e7a6ff',60,2);
@@ -498,17 +499,11 @@ function step(dt){
   }
   G.balls = G.balls.filter(b=>!b.dead);
   for(const f of G.frogs){
-    f.life -= dt; f.hop -= dt; f.squash = Math.max(0,f.squash-dt*4);
-    if(f.hop<=0){
-      f.hop = rand(0.45,0.85);
-      const a = -Math.PI/2 + rand(-1.2,1.2), s = rand(380,620);
-      f.vx = Math.cos(a)*s; f.vy = Math.sin(a)*s; f.face = f.vx<0?-1:1; f.squash=1;
-      burst(f.x,f.y+10,'#c9ff8a',8,140);
-      if(Math.random()<0.6) ribbit();
-    }
-    f.vy += L.grav*0.8*dt; f.x += f.vx*dt; f.y += f.vy*dt;
-    if(f.y<60){ f.y=60; f.vy=Math.abs(f.vy); }
-    collideBody(f, L.frogR, hitPeg);
+    f.life -= dt; f.squash = Math.max(0,f.squash-dt*4);
+    f.vy += L.grav*dt; f.x += f.vx*dt; f.y += f.vy*dt;   // same gravity as the seed, no mid-air hops
+    const sp = Math.hypot(f.vx,f.vy); if(sp>1450){ f.vx*=1450/sp; f.vy*=1450/sp; }
+    if(f.y < f.apexY) f.apexY = f.y;                      // highest point reached so far
+    frogCollide(f);
     if(f.y>L.H+40 || f.life<=0){ f.dead=true; burst(f.x,Math.min(f.y,L.H-20),'#c9ff8a',20,250); if(f.life<=0) tone(500,0.15,'sine',0.06,900); }
   }
   G.frogs = G.frogs.filter(f=>!f.dead);
@@ -523,6 +518,37 @@ function step(dt){
   for(const t of G.texts){ t.life-=dt; t.y-=30*dt; }
   G.texts = G.texts.filter(t=>t.life>0);
   for(const p of pegs) if(!p.alive && p.pop>0) p.pop-=dt*3;
+}
+// Swarm frogs: walls/ceiling bounce like the seed; touching a peg clears it and the frog hops off it.
+// Hop height is capped so a frog never climbs much above the highest point it already reached.
+function frogCollide(f){
+  const r = L.frogR;
+  if(f.x<L.wallL+r){ f.x=L.wallL+r; f.vx=Math.abs(f.vx)*0.85; f.face=1; }
+  if(f.x>L.wallR-r){ f.x=L.wallR-r; f.vx=-Math.abs(f.vx)*0.85; f.face=-1; }
+  if(f.y<r){ f.y=r; f.vy=Math.abs(f.vy)*0.8; }
+  const PR = L.pegR;
+  for(const p of pegs){
+    if(!p.alive) continue;
+    const dx=f.x-p.x, dy=f.y-p.y, rr=r+PR, d2=dx*dx+dy*dy;
+    if(d2>=rr*rr) continue;
+    const d=Math.sqrt(Math.max(d2,1e-4)), nx=d2>1e-4?dx/d:0, ny=d2>1e-4?dy/d:-1;
+    f.x = p.x+nx*rr; f.y = p.y+ny*rr;
+    hitPeg(p); p.alive=false; p.pop=1; burst(p.x,p.y,'#c9ff8a',8,160);
+    if(ny < 0.35){
+      // landed on / glanced the top of the peg -> hop (up + slightly random sideways)
+      const g = L.grav, maxRise = Math.max(0, f.y - (f.apexY - 30));   // allow ~30px above previous apex
+      const up = Math.min(rand(420,620), Math.sqrt(2*g*maxRise));
+      let side = nx*rand(120,260) + rand(-140,140);
+      if(Math.abs(side)<60) side = (Math.random()<0.5?-1:1)*rand(60,160);
+      f.vx = clamp(f.vx*0.3 + side, -420, 420); f.vy = -up;
+      f.face = f.vx<0?-1:1; f.squash = 1;
+      burst(f.x,f.y+10,'#c9ff8a',8,140);
+      if(Math.random()<0.6) ribbit();
+    } else {
+      // hit from below/side: plain bounce, no extra energy
+      const vn = f.vx*nx+f.vy*ny; if(vn<0){ f.vx -= (1+REST)*vn*nx; f.vy -= (1+REST)*vn*ny; }
+    }
+  }
 }
 function madFrogFling(b){
   const c = G.catcher;
@@ -574,6 +600,7 @@ window.__reachPeel = (step=0.0015)=>{
   const un=[...pegs.keys()].filter(i=>!reached.has(i)).map(i=>({x:Math.round(pegs[i].x),y:Math.round(pegs[i].y)}));
   return {n:pegs.length, reachable:reached.size, firstContactFullBoard:firstRound, rounds, unreachable:un};
 };
+window.__swarmAt = (x,y)=>frogSwarm(x,y);
 window.__forceCatch = ()=>{ const c=G.catcher; if(G.state!=='aim') return false; fire(); const b=G.balls[0]; b.x=c.x; b.y=L.catcherY-60; b.vx=0; b.vy=300; return true; };
 function unstick(b){
   let removed = 0;
